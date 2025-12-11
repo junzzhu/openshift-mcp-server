@@ -49,6 +49,35 @@ async def run_oc_command(args: list[str]) -> str:
     except Exception as e:
         raise OCError(f"Unexpected error executing oc: {e}")
 
+async def run_oc_debug_node(node_name: str, script: str) -> str:
+    """
+    Run a shell script/command inside a node debug session.
+    Equivalent to: oc debug node/{node_name} -- chroot /host /bin/bash -c '...'
+    
+    Args:
+        node_name: The name of the node to debug.
+        script: The shell script or command to execute.
+        
+    Returns:
+        The standard output of the command.
+    """
+    # Construct the command to run inside the debug pod
+    # We use shlex.quote for the inner script to ensure it's passed as a single safe argument
+    # command: oc debug node/NAME -- chroot /host /bin/bash -c 'SCRIPT'
+    
+    cmd = [
+        "debug", 
+        f"node/{node_name}", 
+        "--", 
+        "chroot", 
+        "/host", 
+        "/bin/bash", 
+        "-c", 
+        script
+    ]
+    
+    return await run_oc_command(cmd)
+
 async def run_oc_json(args: list[str]) -> dict | list:
     """
     Execute an oc command and parse the output as JSON.
