@@ -42,6 +42,7 @@ Configure the MCP server in your Claude Desktop or Gemini CLI settings:
 
 Once configured, you can ask questions like:
 > "Give me a summary of storage usage for all nodes"
+> 
 > "Why is node worker9 running out of space?"
 
 **Simulated Tool Output (`get_cluster_storage_report`):**
