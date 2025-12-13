@@ -49,6 +49,44 @@ async def run_oc_command(args: list[str]) -> str:
     except Exception as e:
         raise OCError(f"Unexpected error executing oc: {e}")
 
+async def run_command(cmd: list[str]) -> str:
+    """
+    Execute an arbitrary command and return stdout as string.
+    
+    Args:
+        cmd: List of command and arguments (e.g., ["curl", "-s", "https://example.com"])
+        
+    Returns:
+        Standard output string
+        
+    Raises:
+        OCError: If the command returns a non-zero exit code
+    """
+    cmd_str = shlex.join(cmd)
+    logger.debug(f"Executing: {cmd_str}")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        
+        stdout_str = stdout.decode("utf-8")
+        stderr_str = stderr.decode("utf-8")
+
+        if proc.returncode != 0:
+            logger.error(f"Command failed: {cmd_str}\nStderr: {stderr_str}")
+            raise OCError(f"Command failed with exit code {proc.returncode}: {stderr_str}")
+
+        return stdout_str
+
+    except FileNotFoundError:
+        raise OCError(f"Command not found: {cmd[0]}")
+    except Exception as e:
+        raise OCError(f"Unexpected error executing command: {e}")
+
 async def run_oc_debug_node(node_name: str, script: str) -> str:
     """
     Run a shell script/command inside a node debug session.

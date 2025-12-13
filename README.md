@@ -4,8 +4,17 @@ A Model Context Protocol (MCP) server for OpenShift diagnostics and troubleshoot
 
 ## Features
 
+### Storage Tools
 - **Storage Analysis**: `get_cluster_storage_report` - comprehensive report of ephemeral storage usage on nodes, including top pod consumers.
 - **Deep Forensics**: `inspect_node_storage_forensics` - deep analysis of disk usage on a specific node, checking for unused images and container writable layers.
+- **PV Capacity**: `check_persistent_volume_capacity` - monitor persistent volume usage across namespaces with configurable thresholds.
+
+### Monitoring Tools
+- **Resource Balance**: `get_cluster_resource_balance` - analyze CPU and memory resource distribution across nodes.
+- **Pod Restarts**: `detect_pod_restarts_anomalies` - identify pods with excessive restart counts within a time window.
+- **GPU Utilization**: `get_gpu_utilization` - track GPU usage and identify idle GPU resources.
+
+*All monitoring tools use Prometheus metrics via OpenShift route for real-time cluster observability.*
 
 ## Installation
 
@@ -41,9 +50,20 @@ Configure the MCP server in your Claude Desktop or Gemini CLI settings:
 ## Example Usage
 
 Once configured, you can ask questions like:
+
+**Storage Questions:**
 > "Give me a summary of storage usage for all nodes"
 > 
 > "Why is node worker9 running out of space?"
+>
+> "Check persistent volume capacity across all namespaces"
+
+**Monitoring Questions:**
+> "Show me the cluster resource balance"
+>
+> "Which pods are restarting frequently?"
+>
+> "Check GPU utilization in the cluster"
 
 **Simulated Tool Output (`get_cluster_storage_report`):**
 
@@ -77,6 +97,32 @@ Filesystem      Size  Used Avail Use% Mounted on
 - 54.95 Mi: `nvidia-gpu-operator/nvidia-dcgm-exporter-cbkc6`
 ```
 
+**Simulated Tool Output (`get_gpu_utilization`):**
+
+```markdown
+### GPU Utilization Report
+**Total GPUs Found:** 4
+
+| Node | GPU | Utilization | Memory Used | Status |
+|------|-----|-------------|-------------|--------|
+| `10.254.44.54:9400` | 0 | **0.0%** | 0.0% | ⚠️ Idle |
+| `10.254.44.54:9400` | 1 | **85.2%** | 92.3% | ✅ Active |
+```
+
+**Simulated Tool Output (`detect_pod_restarts_anomalies`):**
+
+```markdown
+### Pod Restart Anomalies (>5 in last 1h)
+| Namespace | Pod | Restarts |
+|-----------|-----|----------|
+| `ns-1` | `pod-a-7b666bd598-cvrlk` | **34** |
+| `ns-2` | `pod-b-6dcf7d7bb8-dw8sg` | **16** |
+
+#### 📋 Recommendations
+1. **Check Logs**: `oc logs <pod> -n <namespace> --previous`
+2. **Check Events**: `oc get events -n <namespace>`
+```
+
 ## Development
 
 ```bash
@@ -95,5 +141,5 @@ When run directly, the server expects JSON-RPC messages on standard input. You c
 Expected output (truncated for brevity):
 ```json
 {"jsonrpc":"2.0","id":1,"result":{...}}
-{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_cluster_storage_report",...},{"name":"inspect_node_storage_forensics",...}]}}
+{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_cluster_storage_report",...},{"name":"inspect_node_storage_forensics",...},...]}}
 ```

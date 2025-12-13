@@ -1,19 +1,9 @@
 from mcp.server.fastmcp import FastMCP, Context
 import logging
 from openshift_mcp_server.utils.oc import run_oc_json, get_node_stats_summary, run_oc_debug_node, OCError
+from openshift_mcp_server.utils.formatting import format_bytes
 
 logger = logging.getLogger("openshift-mcp-server")
-
-def format_bytes(size: float) -> str:
-    """Format bytes to human readable string (e.g. 1.2 Gi)."""
-    power = 2**10
-    n = size
-    power_labels = {0 : '', 1: 'Ki', 2: 'Mi', 3: 'Gi', 4: 'Ti'}
-    count = 0
-    while n > power:
-        n /= power
-        count += 1
-    return f"{n:.2f} {power_labels.get(count, 'Pi')}"
 
 async def inspect_node_storage_forensics(node_name: str) -> str:
     """
@@ -232,3 +222,227 @@ async def get_cluster_storage_report(node: str | None = None) -> str:
         
     except OCError as e:
         return f"Error listing nodes: {e}"
+
+async def check_persistent_volume_capacity(
+    namespace: str | None = None,
+    threshold: int = 85
+) -> str:
+    """
+    Monitor Persistent Volume Claim (PVC) capacity usage across the cluster.
+    
+    Critical for preventing database crashes and data loss due to full disks.
+    This checks PVCs (persistent storage) which is distinct from ephemeral storage.
+    
+    Args:
+        namespace: Optional namespace to filter PVCs. If None, checks all namespaces.
+        threshold: Alert threshold percentage (default: 85%). PVCs above this will be flagged.
+    
+    Returns:
+        Formatted report of PVC usage with warnings for volumes exceeding threshold.
+    """
+    try:
+        # 1. Get all PVCs
+        pvc_args = ["get", "pvc"]
+        if namespace:
+            pvc_args.extend(["-n", namespace])
+        else:
+            pvc_args.append("--all-namespaces")
+            
+        pvcs_json = await run_oc_json(pvc_args)
+        pvcs = pvcs_json.get("items", [])
+        
+        if not pvcs:
+            return f"No PVCs found{f' in namespace {namespace}' if namespace else ' in cluster'}."
+        
+        # 2. Get all Pods to find who is using which PVC (avoids N+1 API calls)
+        pod_args = ["get", "pods"]
+        if namespace:
+            pod_args.extend(["-n", namespace])
+        else:
+            pod_args.append("--all-namespaces")
+            
+        pods_json = await run_oc_json(pod_args)
+        
+        # Build mapping: (namespace, pvc_name) -> {pod_name, node_name, volume_name_in_spec}
+        pvc_usage_map = {}
+        
+        for pod in pods_json.get("items", []):
+            pod_meta = pod.get("metadata", {})
+            pod_name = pod_meta.get("name")
+            pod_ns = pod_meta.get("namespace")
+            
+            spec = pod.get("spec", {})
+            node_name = spec.get("nodeName")
+            
+            # Skip pods not scheduled on a node
+            if not node_name:
+                continue
+                
+            volumes = spec.get("volumes", [])
+            for vol in volumes:
+                pvc_claim = vol.get("persistentVolumeClaim", {})
+                claim_name = pvc_claim.get("claimName")
+                
+                if claim_name:
+                    # Map PVC to this pod/node/volume
+                    # If multiple pods use the same PVC, we pick the first one we see
+                    # This is generally sufficient for checking the underlying volume usage
+                    key = (pod_ns, claim_name)
+                    if key not in pvc_usage_map:
+                        pvc_usage_map[key] = {
+                            "pod_name": pod_name,
+                            "node_name": node_name,
+                            "volume_name": vol.get("name") # Internal volume name in Pod Spec
+                        }
+
+        # 3. Collect unique nodes to fetch stats from
+        nodes_to_fetch = set()
+        for usage in pvc_usage_map.values():
+            nodes_to_fetch.add(usage["node_name"])
+            
+        # 4. Fetch node stats (deduplicated)
+        node_stats_cache = {}
+        for node in nodes_to_fetch:
+            try:
+                stats = await get_node_stats_summary(node)
+                node_stats_cache[node] = stats
+            except OCError as e:
+                logger.warning(f"Could not fetch stats for node {node}: {e}")
+
+        # 5. Analyze PVCs
+        pvc_data = []
+        warnings = []
+        critical = []
+        
+        for pvc in pvcs:
+            metadata = pvc.get("metadata", {})
+            pvc_name = metadata.get("name", "unknown")
+            pvc_namespace = metadata.get("namespace", "unknown")
+            
+            status = pvc.get("status", {})
+            phase = status.get("phase")
+            
+            # Only check bound PVCs
+            if phase != "Bound":
+                continue
+
+            capacity_str = status.get("capacity", {}).get("storage", "0")
+            
+            # Check if we have a pod using this PVC
+            usage_info = pvc_usage_map.get((pvc_namespace, pvc_name))
+            
+            if not usage_info:
+                # PVC not mounted by any running pod we saw
+                continue
+                
+            node_name = usage_info["node_name"]
+            pod_name = usage_info["pod_name"]
+            vol_name_in_spec = usage_info["volume_name"]
+            
+            stats = node_stats_cache.get(node_name)
+            if not stats:
+                continue
+                
+            # Find the volume in stats
+            found_stat = False
+            for pod_stat in stats.get("pods", []):
+                pod_ref = pod_stat.get("podRef", {})
+                if pod_ref.get("name") == pod_name and pod_ref.get("namespace") == pvc_namespace:
+                    
+                    for vol_stat in pod_stat.get("volume", []):
+                        # Match volume name from stats with volume name from pod spec
+                        if vol_stat.get("name") == vol_name_in_spec:
+                            used_bytes = vol_stat.get("usedBytes", 0)
+                            capacity_bytes = vol_stat.get("capacityBytes", 0)
+                            
+                            if capacity_bytes > 0:
+                                usage_percent = (used_bytes / capacity_bytes) * 100
+                                
+                                pvc_info = {
+                                    "namespace": pvc_namespace,
+                                    "name": pvc_name,
+                                    "used": used_bytes,
+                                    "capacity": capacity_bytes,
+                                    "usage_percent": usage_percent,
+                                    "capacity_str": capacity_str,
+                                    "pod": pod_name
+                                }
+                                
+                                pvc_data.append(pvc_info)
+                                
+                                # Categorize by severity
+                                if usage_percent >= 95:
+                                    critical.append(pvc_info)
+                                elif usage_percent >= threshold:
+                                    warnings.append(pvc_info)
+                                
+                                found_stat = True
+                            break
+                if found_stat:
+                    break
+        
+        # Format output
+        output = []
+        output.append(f"# Persistent Volume Capacity Report")
+        output.append(f"**Threshold**: {threshold}% | **Total PVCs**: {len(pvcs)} | **Analyzed**: {len(pvc_data)}\n")
+        
+        # Critical alerts (>= 95%)
+        if critical:
+            output.append("## 🔴 CRITICAL - Immediate Action Required (≥95%)")
+            for pvc in sorted(critical, key=lambda x: x["usage_percent"], reverse=True):
+                output.append(
+                    f"- **{pvc['namespace']}/{pvc['name']}**: "
+                    f"{pvc['usage_percent']:.1f}% full "
+                    f"({format_bytes(pvc['used'])} / {format_bytes(pvc['capacity'])})"
+                )
+                output.append(f"  - Used by pod: `{pvc['pod']}`")
+                output.append(f"  - **Action**: Expand PVC immediately or free up space")
+            output.append("")
+        
+        # Warnings (>= threshold, < 95%)
+        if warnings:
+            output.append(f"## ⚠️  WARNING - Approaching Capacity (≥{threshold}%)")
+            for pvc in sorted(warnings, key=lambda x: x["usage_percent"], reverse=True):
+                output.append(
+                    f"- **{pvc['namespace']}/{pvc['name']}**: "
+                    f"{pvc['usage_percent']:.1f}% full "
+                    f"({format_bytes(pvc['used'])} / {format_bytes(pvc['capacity'])})"
+                )
+                output.append(f"  - Used by pod: `{pvc['pod']}`")
+            output.append("")
+        
+        # Healthy volumes summary
+        healthy = [p for p in pvc_data if p["usage_percent"] < threshold]
+        if healthy:
+            output.append(f"## ✅ Healthy Volumes (<{threshold}%): {len(healthy)}")
+            # Show top 5 by usage
+            output.append("**Top 5 by usage:**")
+            for pvc in sorted(healthy, key=lambda x: x["usage_percent"], reverse=True)[:5]:
+                output.append(
+                    f"- {pvc['namespace']}/{pvc['name']}: "
+                    f"{pvc['usage_percent']:.1f}% "
+                    f"({format_bytes(pvc['used'])} / {format_bytes(pvc['capacity'])})"
+                )
+            output.append("")
+        
+        # Recommendations
+        if critical or warnings:
+            output.append("## 📋 Recommendations")
+            if critical:
+                output.append("1. **Immediate**: Expand critical PVCs using `oc patch pvc <name> -p '{\"spec\":{\"resources\":{\"requests\":{\"storage\":\"<new-size>\"}}}}'`")
+            if warnings:
+                output.append("2. **Soon**: Plan capacity expansion for warning-level PVCs")
+            output.append("3. Review application logs for excessive data growth")
+            output.append("4. Consider implementing data retention policies")
+        
+        if not pvc_data:
+            output.append("⚠️  Could not retrieve usage statistics for PVCs.")
+            output.append("This may occur if:")
+            output.append("- PVCs are not currently mounted by any pods")
+            output.append("- Kubelet stats API is unavailable")
+            output.append(f"\n**Total PVCs found**: {len(pvcs)}")
+        
+        return "\n".join(output)
+        
+    except OCError as e:
+        return f"Error checking PVC capacity: {e}"
