@@ -187,7 +187,7 @@ async def get_gpu_utilization() -> str:
             else:
                 status = "✅ Active"
             
-            output.append(f"| `{node}` | {gpu} | **{util:.1f}%** | {mem_str} | {mem_free/1024/1024:.0f} MiB | {status} |")
+            output.append(f"| `{node}` | {gpu} | **{util:.1f}%** | {mem_str} | {mem_free:.0f} MiB | {status} |")
         
         output.append("")
         
