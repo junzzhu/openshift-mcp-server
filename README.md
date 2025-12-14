@@ -16,6 +16,10 @@ A Model Context Protocol (MCP) server for OpenShift diagnostics and troubleshoot
 
 *All monitoring tools use Prometheus metrics via OpenShift route for real-time cluster observability.*
 
+### Pod Diagnostics Tools
+- **Pod Logs**: `get_pod_logs` - retrieve and analyze logs from a specific pod, with support for previous container logs, tail limits, and time-based filtering.
+- **Pod Diagnostics**: `get_pod_diagnostics` - comprehensive health check of a pod including status, conditions, container states, restart counts, and issue detection.
+
 ## Installation
 
 ```bash
@@ -65,6 +69,13 @@ Once configured, you can ask questions like:
 >
 > "Check GPU utilization in the cluster"
 
+**Pod Diagnostics Questions:**
+> "Get logs for pod vllm-gpu-558997879d-2dbrp in namespace default"
+>
+> "Diagnose pod health for my-app-pod in production namespace"
+>
+> "Show me the previous logs for the crashed container"
+
 **Simulated Tool Output (`get_cluster_storage_report`):**
 
 ```markdown
@@ -105,8 +116,8 @@ Filesystem      Size  Used Avail Use% Mounted on
 
 | Node | GPU | Utilization | Memory Used | Status |
 |------|-----|-------------|-------------|--------|
-| `10.254.44.54:9400` | 0 | **0.0%** | 0.0% | ⚠️ Idle |
-| `10.254.44.54:9400` | 1 | **85.2%** | 92.3% | ✅ Active |
+| `host-a:9400` | 0 | **0.0%** | 0.0% | ⚠️ Idle |
+| `host-a:9400` | 1 | **85.2%** | 92.3% | ✅ Active |
 ```
 
 **Simulated Tool Output (`detect_pod_restarts_anomalies`):**
@@ -142,4 +153,45 @@ Expected output (truncated for brevity):
 ```json
 {"jsonrpc":"2.0","id":1,"result":{...}}
 {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_cluster_storage_report",...},{"name":"inspect_node_storage_forensics",...},...]}}
+```
+
+
+**Simulated Tool Output (`get_pod_logs`):**
+
+```markdown
+### Pod Logs: `gpu/vllm-gpu-558997879d-2dbrp`
+
+#### Container: `vllm-gpu` [CURRENT]
+*State: Running (Restarts: 0)*
+
+2025-12-13 18:14:02 INFO: Starting vLLM server...
+2025-12-13 18:14:05 INFO: Loading model weights...
+2025-12-13 18:14:30 INFO: Model loaded successfully
+2025-12-13 18:14:31 INFO: Server listening on 0.0.0.0:8000
+```
+
+**Simulated Tool Output (`get_pod_diagnostics`):**
+
+```markdown
+### Pod Diagnostics: `gpu/vllm-gpu-558997879d-2dbrp`
+
+#### Pod Status
+- **Phase**: Running
+- **Node**: host-a
+- **QoS Class**: BestEffort
+- **Start Time**: 2025-12-12T18:13:58Z
+
+**Conditions**:
+- ✅ PodReadyToStartContainers: True
+- ✅ Initialized: True
+- ✅ Ready: True
+- ✅ ContainersReady: True
+- ✅ PodScheduled: True
+
+#### Container Status
+| Container | Restarts | State | Reason | Exit Code | Ready |
+|-----------|----------|-------|--------|-----------|-------|
+| `vllm-gpu` | **0** | Running | - | - | ✅ |
+
+#### ✅ No issues detected
 ```
