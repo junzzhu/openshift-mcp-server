@@ -55,26 +55,11 @@ Configure the MCP server in your Claude Desktop or Gemini CLI settings:
 
 Once configured, you can ask questions like:
 
-**Storage Questions:**
 > "Give me a summary of storage usage for all nodes"
-> 
-> "Why is node worker9 running out of space?"
->
-> "Check persistent volume capacity across all namespaces"
-
-**Monitoring Questions:**
-> "Show me the cluster resource balance"
->
-> "Which pods are restarting frequently?"
 >
 > "Check GPU utilization in the cluster"
-
-**Pod Diagnostics Questions:**
-> "Get logs for pod vllm-gpu-558997879d-2dbrp in namespace default"
 >
 > "Diagnose pod health for my-app-pod in production namespace"
->
-> "Show me the previous logs for the crashed container"
 
 **Simulated Tool Output (`get_cluster_storage_report`):**
 
@@ -89,23 +74,6 @@ Once configured, you can ask questions like:
 **Top Pod Consumers:**
 - 2.60 Gi: `openshift-marketplace/redhat-operators-gb8ff`
 - 974.96 Mi: `openshift-marketplace/community-operators-fq744`
-```
-
-**Simulated Tool Output (`inspect_node_storage_forensics`):**
-
-```markdown
-### Forensic Report: worker9.example.com
-
-**Physical Disk (Container Storage):**
-Filesystem      Size  Used Avail Use% Mounted on
-/dev/vda4       250G  206G   44G  83% /var/lib/containers
-
-**Reclaimable Space (Unused Images):** 249.42 Gi
--> **Recommendation**: Run `oc adm prune images` to recover this space.
-
-**Top Pod Writable Layers (Container Drift):**
-- 1.99 Gi: `nvidia-gpu-operator/nvidia-driver-daemonset-416.94.202508261955-0-t9d77`
-- 54.95 Mi: `nvidia-gpu-operator/nvidia-dcgm-exporter-cbkc6`
 ```
 
 **Simulated Tool Output (`get_gpu_utilization`):**
@@ -153,45 +121,4 @@ Expected output (truncated for brevity):
 ```json
 {"jsonrpc":"2.0","id":1,"result":{...}}
 {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_cluster_storage_report",...},{"name":"inspect_node_storage_forensics",...},...]}}
-```
-
-
-**Simulated Tool Output (`get_pod_logs`):**
-
-```markdown
-### Pod Logs: `gpu/vllm-gpu-558997879d-2dbrp`
-
-#### Container: `vllm-gpu` [CURRENT]
-*State: Running (Restarts: 0)*
-
-2025-12-13 18:14:02 INFO: Starting vLLM server...
-2025-12-13 18:14:05 INFO: Loading model weights...
-2025-12-13 18:14:30 INFO: Model loaded successfully
-2025-12-13 18:14:31 INFO: Server listening on 0.0.0.0:8000
-```
-
-**Simulated Tool Output (`get_pod_diagnostics`):**
-
-```markdown
-### Pod Diagnostics: `gpu/vllm-gpu-558997879d-2dbrp`
-
-#### Pod Status
-- **Phase**: Running
-- **Node**: host-a
-- **QoS Class**: BestEffort
-- **Start Time**: 2025-12-12T18:13:58Z
-
-**Conditions**:
-- ✅ PodReadyToStartContainers: True
-- ✅ Initialized: True
-- ✅ Ready: True
-- ✅ ContainersReady: True
-- ✅ PodScheduled: True
-
-#### Container Status
-| Container | Restarts | State | Reason | Exit Code | Ready |
-|-----------|----------|-------|--------|-----------|-------|
-| `vllm-gpu` | **0** | Running | - | - | ✅ |
-
-#### ✅ No issues detected
 ```
