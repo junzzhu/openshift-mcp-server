@@ -213,3 +213,199 @@ async def get_gpu_utilization() -> str:
     
     except OCError as e:
         return f"Error querying GPU metrics: {e}\n\nMake sure the NVIDIA GPU Operator and DCGM exporter are installed."
+
+async def get_vllm_metrics(namespace: str | None = None, pod_filter: str | None = None) -> str:
+    """
+    Monitor vLLM inference server performance metrics by directly querying pods.
+    
+    Why:
+    - Performance monitoring: Track request latency and throughput
+    - Capacity planning: Monitor queue size and running requests
+    - Resource optimization: Track GPU cache usage
+    - Proactive alerting: Detect performance degradation
+    
+    Args:
+        namespace: Optional namespace filter
+        pod_filter: Optional pod name filter (supports partial match)
+        
+    Returns:
+        Markdown report of vLLM metrics
+    """
+    from openshift_mcp_server.utils.oc import run_oc_json, run_oc_command
+    import re
+    
+    try:
+        # Find all pods across namespaces (or specific namespace)
+        if namespace:
+            pods_data = await run_oc_json(["get", "pods", "-n", namespace])
+        else:
+            pods_data = await run_oc_json(["get", "pods", "--all-namespaces"])
+        
+        # Filter for vLLM pods
+        vllm_pods = []
+        items = pods_data.get("items", [])
+        
+        for pod in items:
+            pod_name = pod.get("metadata", {}).get("name", "")
+            pod_ns = pod.get("metadata", {}).get("namespace", "")
+            
+            # Check if pod name contains "vllm" and matches filter
+            if "vllm" in pod_name.lower():
+                if pod_filter and pod_filter.lower() not in pod_name.lower():
+                    continue
+                
+                # Check if pod is running
+                phase = pod.get("status", {}).get("phase", "")
+                if phase == "Running":
+                    vllm_pods.append({"name": pod_name, "namespace": pod_ns})
+        
+        if not vllm_pods:
+            return ("### vLLM Metrics Report\n\n"
+                   f"⚠️  No running vLLM pods found (namespace: {namespace or 'all'}, filter: {pod_filter or 'none'})\n\n"
+                   "**Possible reasons:**\n"
+                   "- No vLLM pods are deployed\n"
+                   "- Pods are not in Running state\n"
+                   "- Pod name filter excluded all pods")
+        
+        output = ["### vLLM Performance Metrics\n"]
+        output.append(f"**Total vLLM Pods Found:** {len(vllm_pods)}\n")
+        
+        # Collect metrics from each pod
+        pod_metrics = {}
+        failed_pods = []
+        
+        for pod_info in vllm_pods:
+            pod_name = pod_info["name"]
+            pod_ns = pod_info["namespace"]
+            pod_key = f"{pod_ns}/{pod_name}"
+            
+            try:
+                # Execute curl command to fetch metrics from pod
+                metrics_output = await run_oc_command([
+                    "exec", "-n", pod_ns, pod_name, "--",
+                    "curl", "-s", "http://localhost:8000/metrics"
+                ])
+                
+                # Parse Prometheus-format metrics
+                metrics = {}
+                model_name = "unknown"
+                
+                for line in metrics_output.split("\n"):
+                    # Skip comments and empty lines
+                    if line.startswith("#") or not line.strip():
+                        continue
+                    
+                    # Parse metric line: metric_name{labels} value
+                    # Extract model_name from labels
+                    if 'model_name="' in line:
+                        match = re.search(r'model_name="([^"]+)"', line)
+                        if match:
+                            model_name = match.group(1)
+                    
+                    # Extract specific metrics we care about
+                    if line.startswith("vllm:num_requests_running"):
+                        match = re.search(r'}\s+([\d.]+)', line)
+                        if match:
+                            metrics["running_requests"] = float(match.group(1))
+                    
+                    elif line.startswith("vllm:num_requests_waiting"):
+                        match = re.search(r'}\s+([\d.]+)', line)
+                        if match:
+                            metrics["waiting_requests"] = float(match.group(1))
+                    
+                    elif line.startswith("vllm:kv_cache_usage_perc"):
+                        match = re.search(r'}\s+([\d.]+)', line)
+                        if match:
+                            metrics["kv_cache_usage"] = float(match.group(1))
+                    
+                    elif line.startswith("vllm:prompt_tokens_total"):
+                        match = re.search(r'}\s+([\d.]+)', line)
+                        if match:
+                            metrics["prompt_tokens"] = float(match.group(1))
+                    
+                    elif line.startswith("vllm:generation_tokens_total"):
+                        match = re.search(r'}\s+([\d.]+)', line)
+                        if match:
+                            metrics["generation_tokens"] = float(match.group(1))
+                    
+                    # Also capture request success metrics
+                    elif line.startswith("vllm:request_success_total"):
+                        if 'finished_reason="length"' in line:
+                            match = re.search(r'}\s+([\d.]+)', line)
+                            if match:
+                                metrics["success_length"] = float(match.group(1))
+                        elif 'finished_reason="stop"' in line:
+                            match = re.search(r'}\s+([\d.]+)', line)
+                            if match:
+                                metrics["success_stop"] = float(match.group(1))
+                
+                metrics["model"] = model_name
+                pod_metrics[pod_key] = metrics
+                
+            except OCError as e:
+                failed_pods.append(f"{pod_key}: {str(e)}")
+                logger.warning(f"Failed to fetch metrics from {pod_key}: {e}")
+        
+        if not pod_metrics:
+            error_msg = ["### vLLM Metrics Report\n"]
+            error_msg.append(f"❌ Failed to fetch metrics from all {len(vllm_pods)} pod(s)\n")
+            if failed_pods:
+                error_msg.append("**Errors:**")
+                for err in failed_pods:
+                    error_msg.append(f"- {err}")
+            return "\n".join(error_msg)
+        
+        # Summary Table
+        output.append("| Pod | Model | Waiting | Running | KV Cache | Prompt Tokens | Gen Tokens | Success |")
+        output.append("|-----|-------|---------|---------|----------|---------------|------------|---------|")
+        
+        alerts = []
+        
+        for pod_key, metrics in sorted(pod_metrics.items()):
+            model = metrics.get("model", "unknown")
+            waiting = metrics.get("waiting_requests", 0)
+            running = metrics.get("running_requests", 0)
+            kv_cache = metrics.get("kv_cache_usage", 0)
+            prompt_tokens = metrics.get("prompt_tokens", 0)
+            gen_tokens = metrics.get("generation_tokens", 0)
+            success_total = metrics.get("success_stop", 0) + metrics.get("success_length", 0)
+            
+            # Format values
+            waiting_str = f"**{int(waiting)}**" if waiting > 10 else f"{int(waiting)}"
+            kv_cache_str = f"**{kv_cache*100:.1f}%**" if kv_cache > 0.90 else f"{kv_cache*100:.1f}%"
+            
+            output.append(f"| `{pod_key}` | `{model}` | {waiting_str} | {int(running)} | {kv_cache_str} | {int(prompt_tokens)} | {int(gen_tokens)} | {int(success_total)} |")
+            
+            # Generate alerts
+            if waiting > 20:
+                alerts.append(f"- ⚠️ **{pod_key}**: High queue size ({int(waiting)} waiting). Consider scaling up.")
+            if kv_cache > 0.95:
+                alerts.append(f"- 🔥 **{pod_key}**: KV cache nearly full ({kv_cache*100:.1f}%). May cause OOM.")
+            if running == 0 and waiting == 0 and (prompt_tokens > 0 or gen_tokens > 0):
+                alerts.append(f"- ℹ️ **{pod_key}**: Idle but has processed {int(success_total)} requests. Total tokens: {int(prompt_tokens + gen_tokens)}")
+        
+        output.append("")
+        
+        # Show failed pods if any
+        if failed_pods:
+            output.append("#### ⚠️ Failed to Query")
+            for err in failed_pods:
+                output.append(f"- {err}")
+            output.append("")
+        
+        # Alerts and Recommendations
+        if alerts:
+            output.append("#### ⚠️ Alerts")
+            output.extend(alerts)
+            output.append("")
+            output.append("#### 💡 Recommendations")
+            output.append("- **High Queue**: Scale horizontally (add more vLLM pods) or vertically (increase GPU count)")
+            output.append("- **High KV Cache Usage**: Reduce `max_model_len` or `gpu_memory_utilization` in vLLM config")
+            output.append("- **Detailed Metrics**: Use `oc exec -n <ns> <pod> -- curl http://localhost:8000/metrics` for full data")
+        else:
+            output.append("#### ✅ All vLLM instances operating normally")
+        
+        return "\n".join(output)
+    
+    except OCError as e:
+        return f"Error querying vLLM pods: {e}"
