@@ -13,6 +13,9 @@ A Model Context Protocol (MCP) server for OpenShift diagnostics and troubleshoot
 - **Resource Balance**: `get_cluster_resource_balance` - analyze CPU and memory resource distribution across nodes.
 - **Pod Restarts**: `detect_pod_restarts_anomalies` - identify pods with excessive restart counts within a time window.
 - **GPU Utilization**: `get_gpu_utilization` - track GPU usage and identify idle GPU resources.
+- **Inspect GPU Pod**: `inspect_gpu_pod` - run `nvidia-smi` inside a GPU-enabled pod to view real-time process and memory details.
+- **Check GPU Health**: `check_gpu_health` - check for GPU hardware errors (XID) and throttling events across the cluster.
+- **vLLM Metrics**: `get_vllm_metrics` - monitor vLLM inference server performance metrics (throughput, queue size, cache usage).
 
 *All monitoring tools use Prometheus metrics via OpenShift route for real-time cluster observability.*
 
